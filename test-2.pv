@@ -1,0 +1,115 @@
+(*defination for code*)
+
+(*----- channel ----*)
+free c: channel.  (*public channel *)
+free cp:channel[private].(*secure channel*)
+
+(*----- type ----*)
+type point.
+const G:point.
+
+free IDi:bitstring.    (*ID of Devicei*)
+free IDj:bitstring.    (*ID of Gatewayj*)
+free rTA:bitstring. (*session key of Devicei*)
+free ski:bitstring[private]. (*session key of Devicei*)
+free K_ij:bitstring[private]. (*session key of Devicei*)
+free K_ji:bitstring[private]. (*session key of Gatewayj*)
+
+(*Functions*)
+fun hash(bitstring):bitstring.
+fun xor(bitstring,bitstring):bitstring.
+reduc forall a:bitstring, b:bitstring; i_xor(xor(a,b),b)=a.
+fun eccadd(point,point):point.
+fun eccmuti(bitstring,point):point.
+fun schonnr_sign(bitstring,bitstring,bitstring):bitstring.
+reduc forall sk:bitstring, h:bitstring, ra:bitstring; schonnr_veri(eccmuti(schonnr_sign(sk,h,ra),G),eccadd(eccmuti(sk,G),eccmuti(h,eccmuti(ra,G))))=true.
+fun Gw(bitstring,bitstring,bitstring):bitstring.
+fun Gsk(bitstring,bitstring,bitstring):bitstring.
+reduc forall ra:bitstring,IDi:bitstring,rda:bitstring,skda:bitstring; 
+CheckPK(eccmuti(Gsk(ra,hash((IDi,eccadd(eccmuti(ra,G),eccmuti(rda,G)))),Gw(hash((IDi,eccadd(eccmuti(ra,G),eccmuti(rda,G)))),rda,skda)),G),eccadd(eccmuti(ra,G),eccmuti(rda,G)),hash((IDi,eccadd(eccmuti(ra,G),eccmuti(rda,G)))),eccmuti(skda,G))=true.
+fun enc(bitstring,bitstring):bitstring.
+reduc forall m:bitstring, k:bitstring; dec(enc(m,k),k)=m.
+
+(*Equations*)
+(*equation for ECDH*)
+equation forall m:bitstring, n:bitstring; eccmuti(m,eccmuti(n,G))=eccmuti(n,eccmuti(m,G)).
+
+event begin_auth_di(bitstring).
+event end_auth_di(bitstring).
+event begin_auth_gwj(bitstring).
+event end_auth_gwj(bitstring).
+
+(*Attack Model*)
+query attacker(rTA).
+query attacker(ski).
+query attacker(K_ij).
+query attacker(K_ji).
+query x:bitstring; inj-event(end_auth_di(x)) ==> inj-event(begin_auth_di(x)).
+query x:bitstring; inj-event(end_auth_gwj(x)) ==> inj-event(begin_auth_gwj(x)).
+
+let device_i(PKTA: point) =
+new ri:bitstring;
+let Ri = eccmuti(ri,G) in
+out(cp,(IDi,Ri));
+in(cp,(Certi:point,w:bitstring));
+let hiX = hash((IDi,Certi)) in
+let ski = Gsk(ri,hiX,w) in
+let PKi = eccmuti(ski,G) in
+if CheckPK(PKi,Certi,hiX,PKTA) then
+new ai:bitstring;
+let Ai = eccmuti(ai,G) in
+new Noncei:bitstring;
+let h1 = hash((IDi,Certi,Ai,Noncei,IDj)) in
+let sig1 = schonnr_sign(ai,h1,ski) in
+out(c,(IDi,Certi,PKi,Ai,Noncei,sig1));
+in(c,(PKj:point,Certj:point,Bj:point,S_1:bitstring,h2:bitstring));
+event begin_auth_gwj(IDj);
+if CheckPK(PKj,Certj,hash((IDj,Certj)),PKTA) then
+let SK_ij = eccmuti(ai,Bj) in
+if h2 = hash((PKj,Certj,Bj,S_1,Noncei,SK_ij)) then
+let Noncejx = i_xor(S_1,hash((Bj,SK_ij))) in
+let K_ij = hash((SK_ij,Noncei,Noncejx)) in
+let S_2 = enc(Noncejx,K_ij) in
+event end_auth_di(IDi);
+out(c,(S_2)).
+
+
+let Gateway_j(skj: bitstring, Certj:point, PKj: point, PKTA: point) =
+in(c,(IDi:bitstring,Certi:point,PKi:point,Ai:point,Noncei:bitstring,sig1:bitstring));
+event begin_auth_di(IDi);
+let h1x = hash((IDi,Certi,PKi,Ai,Noncei,IDj)) in
+if CheckPK(PKi,Certi,hash((IDi,Certi)),PKTA) then
+if schonnr_veri(eccmuti(sig1,G),eccadd(Ai,eccmuti(h1x,PKi))) then
+new bj:bitstring;
+let Bj = eccmuti(bj,G) in
+let SK_ji = eccmuti(bj,Ai) in
+new Noncej:bitstring;
+let S_1 = xor(Noncej,hash((Bj,SK_ji))) in
+let h2 = hash((PKj,Certj,Bj,S_1,Noncei,SK_ji)) in
+out(c,(PKj,Certj,Bj,S_1,h2));
+in(c,(S_2:bitstring));
+let K_ji = hash((SK_ji,Noncei,Noncej)) in
+if Noncej = dec(S_2,K_ij) then
+event begin_auth_gwj(IDj).
+
+
+(*Process DA*)
+let TA(skTA: bitstring, PKTA: point) = 
+in(cp,(IDi:bitstring,Ri:point));
+let Certi = eccadd(Ri,eccmuti(rTA,G)) in
+let hi = hash((IDi,Certi)) in
+let w = Gw(hi,rTA,skTA) in
+out(c,(rTA));
+out(cp,(Certi,w)).
+
+(*main process*)
+process
+
+new skTA:bitstring;
+let PKTA = eccmuti(skTA,G) in
+new rj:bitstring;
+new rTA1:bitstring;
+let Certj = eccadd(eccmuti(rj,G),eccmuti(rTA1,G)) in
+let skj = Gsk(rj,hash((IDj,Certj)),Gw(hash((IDj,Certj)),rTA1,skTA)) in
+let PKj = eccmuti(skj,G) in
+(!device_i(PKTA))|(!Gateway_j(skj,Certj,PKj,PKTA))|(!TA(skTA,PKTA))
